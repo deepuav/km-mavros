@@ -41,7 +41,8 @@ public:
 		lp_nh("~local_position"),
 		tf_send(false),
 		has_local_position_ned(false),
-		has_local_position_ned_cov(false)
+		has_local_position_ned_cov(false),
+		has_odometry(false)
 	{ }
 
 	void initialize(UAS &uas_) override
@@ -56,6 +57,9 @@ public:
 		lp_nh.param("tf/send", tf_send, false);
 		lp_nh.param<std::string>("tf/frame_id", tf_frame_id, "map");
 		lp_nh.param<std::string>("tf/child_frame_id", tf_child_frame_id, "base_link");
+		
+		// Whether to use ODOMETRY message for odom
+		lp_nh.param("use_odometry", use_odometry, true);
 
 		local_position = lp_nh.advertise<geometry_msgs::PoseStamped>("pose", 10);
 		local_position_cov = lp_nh.advertise<geometry_msgs::PoseWithCovarianceStamped>("pose_cov", 10);
@@ -64,12 +68,15 @@ public:
 		local_velocity_cov = lp_nh.advertise<geometry_msgs::TwistWithCovarianceStamped>("velocity_body_cov", 10);
 		local_accel = lp_nh.advertise<geometry_msgs::AccelWithCovarianceStamped>("accel", 10);
 		local_odom = lp_nh.advertise<nav_msgs::Odometry>("odom",10);
+		// New topic for external odometry from MAVLINK ODOMETRY message
+		external_odom = lp_nh.advertise<nav_msgs::Odometry>("external_odom", 10);
 	}
 
 	Subscriptions get_subscriptions() override {
 		return {
 			       make_handler(&LocalPositionPlugin::handle_local_position_ned),
-			       make_handler(&LocalPositionPlugin::handle_local_position_ned_cov)
+			       make_handler(&LocalPositionPlugin::handle_local_position_ned_cov),
+			       make_handler(&LocalPositionPlugin::handle_odometry)
 		};
 	}
 
@@ -83,6 +90,7 @@ private:
 	ros::Publisher local_velocity_cov;
 	ros::Publisher local_accel;
 	ros::Publisher local_odom;
+	ros::Publisher external_odom;
 
 	std::string frame_id;		//!< frame for Pose
 	std::string tf_frame_id;	//!< origin for TF
@@ -90,6 +98,8 @@ private:
 	bool tf_send;
 	bool has_local_position_ned;
 	bool has_local_position_ned_cov;
+	bool has_odometry;
+	bool use_odometry;		//!< whether to use ODOMETRY message for odom
 
 	void publish_tf(boost::shared_ptr<nav_msgs::Odometry> &odom)
 	{
@@ -241,6 +251,146 @@ private:
 		accel->accel.covariance[14] = pos_ned.covariance[44];	// az
 
 		local_accel.publish(accel);
+	}
+
+	void handle_odometry(const mavlink::mavlink_message_t *msg, mavlink::common::msg::ODOMETRY &odom_msg)
+	{
+		has_odometry = true;
+
+		// 创建ROS Odometry消息
+		auto odom = boost::make_shared<nav_msgs::Odometry>();
+		
+		// 设置坐标系ID
+		std::string child_frame_id = tf_child_frame_id;
+		
+		// 根据坐标系类型处理位置和速度
+		// 注意：直接使用整数值来比较frame_id
+		if (odom_msg.frame_id == 1) { // MAV_FRAME_LOCAL_NED
+			// 转换为ENU坐标系
+			auto enu_position = ftf::transform_frame_ned_enu(Eigen::Vector3d(odom_msg.x, odom_msg.y, odom_msg.z));
+			auto enu_velocity = ftf::transform_frame_ned_enu(Eigen::Vector3d(odom_msg.vx, odom_msg.vy, odom_msg.vz));
+
+			// 填充位置和速度数据
+			tf::pointEigenToMsg(enu_position, odom->pose.pose.position);
+			tf::vectorEigenToMsg(enu_velocity, odom->twist.twist.linear);
+			
+			// 转换角速度 - NED到ENU
+			auto enu_angular_velocity = ftf::transform_frame_ned_enu(Eigen::Vector3d(odom_msg.rollspeed, odom_msg.pitchspeed, odom_msg.yawspeed));
+			tf::vectorEigenToMsg(enu_angular_velocity, odom->twist.twist.angular);
+		} 
+		else if (odom_msg.frame_id == 2) { // MAV_FRAME_LOCAL_OFFSET_NED
+			ROS_WARN_THROTTLE(30, "ODOMETRY: MAV_FRAME_LOCAL_OFFSET_NED not supported yet");
+			return;
+		}
+		else if (odom_msg.frame_id == 6) { // MAV_FRAME_LOCAL_ENU
+			// 直接使用ENU坐标
+			odom->pose.pose.position.x = odom_msg.x;
+			odom->pose.pose.position.y = odom_msg.y;
+			odom->pose.pose.position.z = odom_msg.z;
+			
+			odom->twist.twist.linear.x = odom_msg.vx;
+			odom->twist.twist.linear.y = odom_msg.vy;
+			odom->twist.twist.linear.z = odom_msg.vz;
+			
+			// 直接使用角速度 - 已经是ENU
+			odom->twist.twist.angular.x = odom_msg.rollspeed;
+			odom->twist.twist.angular.y = odom_msg.pitchspeed;
+			odom->twist.twist.angular.z = odom_msg.yawspeed;
+		}
+		else {
+			ROS_WARN_THROTTLE(30, "ODOMETRY: Unsupported frame_id: %d", odom_msg.frame_id);
+			return;
+		}
+		
+		// 设置child_frame_id
+		// 注意：直接使用整数值比较child_frame_id
+		if (odom_msg.child_frame_id == 8) { // MAV_FRAME_BODY_NED
+			// 使用默认的tf_child_frame_id
+			child_frame_id = tf_child_frame_id;
+		}
+		else if (odom_msg.child_frame_id == 12) { // MAV_FRAME_BODY_FRD
+			// 使用默认的tf_child_frame_id
+			child_frame_id = tf_child_frame_id;
+		}
+		else {
+			// 对于其他类型的child_frame_id，我们直接使用默认值
+			ROS_WARN_THROTTLE(30, "ODOMETRY: Unsupported child_frame_id: %d, using default", odom_msg.child_frame_id);
+		}
+		
+		// 填充Header
+		odom->header = m_uas->synchronized_header(frame_id, odom_msg.time_usec);
+		odom->child_frame_id = child_frame_id;
+		
+		// 设置四元数
+		// 直接转换四元数
+		Eigen::Quaterniond q(odom_msg.q[0], odom_msg.q[1], odom_msg.q[2], odom_msg.q[3]);
+		
+		// 如果是NED坐标系，需要转换到ENU
+		if (odom_msg.frame_id == 1) { // MAV_FRAME_LOCAL_NED
+			q = ftf::transform_orientation_ned_enu(q);
+		}
+		
+		tf::quaternionEigenToMsg(q, odom->pose.pose.orientation);
+		
+		// 从odom_msg获取协方差数据
+		// ODOMETRY.pose_covariance包含位置和姿态的协方差（位置x,y,z,姿态roll,pitch,yaw)
+		// ODOMETRY.velocity_covariance包含线速度和角速度的协方差（线速度vx,vy,vz,角速度rollspeed,pitchspeed,yawspeed)
+		
+		// 位置协方差
+		// MAVLINK ODOMETRY协方差是21个浮点数的数组，表示6x6矩阵的下三角部分
+		// ROS Odometry协方差是6x6的全矩阵，按行优先顺序排列
+		for (int i = 0; i < 6; i++) {
+			for (int j = 0; j < 6; j++) {
+				if (j <= i) {
+					// 计算下三角矩阵中的索引
+					int k = i * (i + 1) / 2 + j;
+					if (k < 21) { // 确保索引有效
+						odom->pose.covariance[i * 6 + j] = odom_msg.pose_covariance[k];
+						odom->pose.covariance[j * 6 + i] = odom_msg.pose_covariance[k]; // 对称元素
+					}
+				}
+			}
+		}
+		
+		// 速度协方差
+		for (int i = 0; i < 6; i++) {
+			for (int j = 0; j < 6; j++) {
+				if (j <= i) {
+					// 计算下三角矩阵中的索引
+					int k = i * (i + 1) / 2 + j;
+					if (k < 21) { // 确保索引有效
+						odom->twist.covariance[i * 6 + j] = odom_msg.velocity_covariance[k];
+						odom->twist.covariance[j * 6 + i] = odom_msg.velocity_covariance[k]; // 对称元素
+					}
+				}
+			}
+		}
+		
+		// 发布外部里程计消息
+		external_odom.publish(odom);
+		
+		// 如果设置了use_odometry，还将用此消息更新主odom话题
+		if (use_odometry) {
+			if (!has_local_position_ned_cov && !has_local_position_ned) {
+				local_odom.publish(odom);
+				
+				// 发布姿态
+				auto pose = boost::make_shared<geometry_msgs::PoseStamped>();
+				pose->header = odom->header;
+				pose->pose = odom->pose.pose;
+				local_position.publish(pose);
+				
+				// 发布速度
+				auto twist_body = boost::make_shared<geometry_msgs::TwistStamped>();
+				twist_body->header = odom->header;
+				twist_body->header.frame_id = odom->child_frame_id;
+				twist_body->twist = odom->twist.twist;
+				local_velocity_body.publish(twist_body);
+				
+				// 发布tf
+				publish_tf(odom);
+			}
+		}
 	}
 };
 }	// namespace std_plugins
