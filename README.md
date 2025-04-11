@@ -21,3 +21,7 @@ MAVLink extendable communication node for ROS.
 - Since 2019-01-03 (0.28.0) support for Indigo by master not guaranteed. Consider update to more recent distro.
 - 2020-01-01 version 1.0.0 released, please see [#1369][iss1369] for reasons and its purpose.
 - 2021-05-28 version 2.0.0 released, it's the first alpha release for ROS2.
+- 2025-04-08 KM-mavors V1.0
+   1、Clarify the coordinate system transformation from the North-East-Down (NED) to the North-East-Up (ENU) system. Transform from the original aviation coordinate system to the coordinate system of robots and autonomous driving vehicles. After the processing is completed, perform a reverse transmission.
+   2、Directly obtain the local pose, linear velocity, acceleration, and covariance using the odom message of PX4. Previously, the pose was obtained from separate position and attitude statements, which led to the problem of time asynchrony, and there was no covariance data.
+   3、Directly publish the odom data of PX4 as MAVROS pose and odom data without additional calculation and transformation, reducing the consumption of computing resources.
