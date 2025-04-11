@@ -1,6 +1,9 @@
-MAVROS
-======
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/mavlink/mavros)](https://github.com/mavlink/mavros/releases)  [![Gitter](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/mavlink/mavros?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)  [![CI](https://github.com/mavlink/mavros/actions/workflows/main.yml/badge.svg)](https://github.com/mavlink/mavros/actions/workflows/main.yml)
+km-mavros 1.0
+科马航空特制版mavos，是KM-ligo的组件之一。
+主要改动：
+1、明确坐标系转换东北地（ned）到东北天（enu）的转换。从原本的航空坐标系转换到机器人和自动驾驶车辆的坐标系，处理完成后在反向回传。
+2、使用px4的odom消息直接获取本地位姿、线速度、加速度和协方差。原来是分别从单独位置、姿态语句获取位姿，存在时间不同步问题，而且没有协方差数据。
+3、使用px4的odom直接发布成mavros pose和odom数据，不需要而外计算和转换，减低计算资源消耗。
 
 MAVLink extendable communication node for ROS.
 
@@ -17,66 +20,3 @@ MAVLink extendable communication node for ROS.
 - Since 2019-01-03 (0.28.0) support for Indigo by master not guaranteed. Consider update to more recent distro.
 - 2020-01-01 version 1.0.0 released, please see [#1369][iss1369] for reasons and its purpose.
 - 2021-05-28 version 2.0.0 released, it's the first alpha release for ROS2.
-
-
-mavros package
---------------
-
-It is the main package, please see its [README][mrrm].
-Here you may read [installation instructions][inst].
-
-
-mavros\_extras package
-----------------------
-
-This package contains some extra nodes and plugins for mavros, please see its [README][exrm].
-
-
-libmavconn package
-------------------
-
-This package contain mavconn library, see its [README][libmc].
-LibMAVConn may be used outside of ROS environment.
-
-
-test\_mavros package
---------------------
-
-This package contain hand-tests and [manual page][test] for APM and PX4 SITL.
-Please see [README][test] first!
-
-
-mavros\_msgs package
---------------------
-
-This package contains messages and services used in MAVROS.
-
-
-Support forums and chats
-------------------------
-
-Please ask your questions not related to bugs/feature or requests on:
-
-- [MAVROS discussion in Gitter IM](https://gitter.im/mavlink/mavros)
-- [PX4 Discuss Forum](https://discuss.px4.io/)
-- [PX4 Slack](https://slack.px4.io/)
-- [Ardupilot Discuss Forum](https://discuss.ardupilot.org/)
-- [ArduPilot/VisionProjects in Gitter IM](https://gitter.im/ArduPilot/ardupilot/VisionProjects)
-
-We'd like to keep the project bug tracker as free as possible, so please contact via the above methods. You can also PM us via Gitter and the PX4 Slack.
-
-
-CI Statuses
------------
-
-  - ROS Melodic: [![Build Status](http://build.ros.org/buildStatus/icon?job=Mdev__mavros__ubuntu_bionic_amd64)](http://build.ros.org/job/Mdev__mavros__ubuntu_bionic_amd64/)
-  - ROS Noetic: [![Build Status](http://build.ros.org/buildStatus/icon?job=Ndev__mavros__ubuntu_focal_amd64)](http://build.ros.org/job/Ndev__mavros__ubuntu_focal_amd64/)
-
-
-[mrrm]: https://github.com/mavlink/mavros/blob/master/mavros/README.md
-[exrm]: https://github.com/mavlink/mavros/blob/master/mavros_extras/README.md
-[libmc]: https://github.com/mavlink/mavros/blob/master/libmavconn/README.md
-[test]: https://github.com/mavlink/mavros/blob/master/test_mavros/README.md
-[inst]: https://github.com/mavlink/mavros/blob/master/mavros/README.md#installation
-[geolib]: https://geographiclib.sourceforge.io/
-[iss1369]: https://github.com/mavlink/mavros/issues/1369
