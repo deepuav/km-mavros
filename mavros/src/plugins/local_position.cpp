@@ -60,6 +60,9 @@ public:
 		
 		// Whether to use ODOMETRY message for odom
 		lp_nh.param("use_odometry", use_odometry, true);
+		
+		// Whether to process ODOMETRY messages at all
+		lp_nh.param("enable_odometry_handler", enable_odometry_handler, false);
 
 		local_position = lp_nh.advertise<geometry_msgs::PoseStamped>("pose", 10);
 		local_position_cov = lp_nh.advertise<geometry_msgs::PoseWithCovarianceStamped>("pose_cov", 10);
@@ -100,7 +103,8 @@ private:
 	bool has_local_position_ned_cov;
 	bool has_odometry;
 	bool use_odometry;		//!< whether to use ODOMETRY message for odom
-
+	bool enable_odometry_handler;	//!< whether to process ODOMETRY messages at all
+	
 	void publish_tf(boost::shared_ptr<nav_msgs::Odometry> &odom)
 	{
 		if (tf_send) {
@@ -121,8 +125,9 @@ private:
 		has_local_position_ned = true;
 
 		//--------------- Transform FCU position and Velocity Data ---------------//
-		auto enu_position = ftf::transform_frame_ned_enu(Eigen::Vector3d(pos_ned.x, pos_ned.y, pos_ned.z));
-		auto enu_velocity = ftf::transform_frame_ned_enu(Eigen::Vector3d(pos_ned.vx, pos_ned.vy, pos_ned.vz));
+		// 特殊转换方案：x和z取反、y不变
+		Eigen::Vector3d enu_position(-pos_ned.x, pos_ned.y, -pos_ned.z);
+		Eigen::Vector3d enu_velocity(-pos_ned.vx, pos_ned.vy, -pos_ned.vz);
 
 		//--------------- Get Odom Information ---------------//
 		// Note this orientation describes baselink->ENU transform
@@ -130,7 +135,10 @@ private:
 		auto baselink_angular_msg = m_uas->get_attitude_angular_velocity_enu();
 		Eigen::Quaterniond enu_orientation;
 		tf::quaternionMsgToEigen(enu_orientation_msg, enu_orientation);
-		auto baselink_linear = ftf::transform_frame_enu_baselink(enu_velocity, enu_orientation.inverse());
+		
+		// 调整baselink_linear的计算，以适应新的坐标转换方案
+		// 使用直接转换，不调用可能使用标准转换的ftf函数
+		Eigen::Vector3d baselink_linear = enu_orientation.inverse() * enu_velocity;
 
 		auto odom = boost::make_shared<nav_msgs::Odometry>();
 		odom->header = m_uas->synchronized_header(frame_id, pos_ned.time_boot_ms);
@@ -179,14 +187,17 @@ private:
 	{
 		has_local_position_ned_cov = true;
 
-		auto enu_position = ftf::transform_frame_ned_enu(Eigen::Vector3d(pos_ned.x, pos_ned.y, pos_ned.z));
-		auto enu_velocity = ftf::transform_frame_ned_enu(Eigen::Vector3d(pos_ned.vx, pos_ned.vy, pos_ned.vz));
+		// 特殊转换方案：x和z取反、y不变
+		Eigen::Vector3d enu_position(-pos_ned.x, pos_ned.y, -pos_ned.z);
+		Eigen::Vector3d enu_velocity(-pos_ned.vx, pos_ned.vy, -pos_ned.vz);
 
 		auto enu_orientation_msg = m_uas->get_attitude_orientation_enu();
 		auto baselink_angular_msg = m_uas->get_attitude_angular_velocity_enu();
 		Eigen::Quaterniond enu_orientation;
 		tf::quaternionMsgToEigen(enu_orientation_msg, enu_orientation);
-		auto baselink_linear = ftf::transform_frame_enu_baselink(enu_velocity, enu_orientation.inverse());
+		
+		// 使用直接转换，不调用可能使用标准转换的ftf函数
+		Eigen::Vector3d baselink_linear = enu_orientation.inverse() * enu_velocity;
 
 		auto odom = boost::make_shared<nav_msgs::Odometry>();
 		odom->header = m_uas->synchronized_header(frame_id, pos_ned.time_usec);
@@ -243,7 +254,8 @@ private:
 		auto accel = boost::make_shared<geometry_msgs::AccelWithCovarianceStamped>();
 		accel->header = odom->header;
 
-		auto enu_accel = ftf::transform_frame_ned_enu(Eigen::Vector3d(pos_ned.ax, pos_ned.ay, pos_ned.az));
+		// 特殊转换方案：x和z取反、y不变
+		Eigen::Vector3d enu_accel(-pos_ned.ax, pos_ned.ay, -pos_ned.az);
 		tf::vectorEigenToMsg(enu_accel, accel->accel.accel.linear);
 
 		accel->accel.covariance[0] = pos_ned.covariance[39];	// ax
@@ -255,142 +267,99 @@ private:
 
 	void handle_odometry(const mavlink::mavlink_message_t *msg, mavlink::common::msg::ODOMETRY &odom_msg)
 	{
+		// 如果禁用了处理ODOMETRY消息，则立即返回
+		if (!enable_odometry_handler)
+			return;
+			
 		has_odometry = true;
 
-		// 创建ROS Odometry消息
+		// 创建ROS Odometry消息并设置基本信息
 		auto odom = boost::make_shared<nav_msgs::Odometry>();
-		
-		// 设置坐标系ID
-		std::string child_frame_id = tf_child_frame_id;
-		
-		// 根据坐标系类型处理位置和速度
-		// 注意：直接使用整数值来比较frame_id
-		if (odom_msg.frame_id == 1) { // MAV_FRAME_LOCAL_NED
-			// 转换为ENU坐标系
-			auto enu_position = ftf::transform_frame_ned_enu(Eigen::Vector3d(odom_msg.x, odom_msg.y, odom_msg.z));
-			auto enu_velocity = ftf::transform_frame_ned_enu(Eigen::Vector3d(odom_msg.vx, odom_msg.vy, odom_msg.vz));
-
-			// 填充位置和速度数据
-			tf::pointEigenToMsg(enu_position, odom->pose.pose.position);
-			tf::vectorEigenToMsg(enu_velocity, odom->twist.twist.linear);
-			
-			// 转换角速度 - NED到ENU
-			auto enu_angular_velocity = ftf::transform_frame_ned_enu(Eigen::Vector3d(odom_msg.rollspeed, odom_msg.pitchspeed, odom_msg.yawspeed));
-			tf::vectorEigenToMsg(enu_angular_velocity, odom->twist.twist.angular);
-		} 
-		else if (odom_msg.frame_id == 2) { // MAV_FRAME_LOCAL_OFFSET_NED
-			ROS_WARN_THROTTLE(30, "ODOMETRY: MAV_FRAME_LOCAL_OFFSET_NED not supported yet");
-			return;
-		}
-		else if (odom_msg.frame_id == 6) { // MAV_FRAME_LOCAL_ENU
-			// 直接使用ENU坐标
-			odom->pose.pose.position.x = odom_msg.x;
-			odom->pose.pose.position.y = odom_msg.y;
-			odom->pose.pose.position.z = odom_msg.z;
-			
-			odom->twist.twist.linear.x = odom_msg.vx;
-			odom->twist.twist.linear.y = odom_msg.vy;
-			odom->twist.twist.linear.z = odom_msg.vz;
-			
-			// 直接使用角速度 - 已经是ENU
-			odom->twist.twist.angular.x = odom_msg.rollspeed;
-			odom->twist.twist.angular.y = odom_msg.pitchspeed;
-			odom->twist.twist.angular.z = odom_msg.yawspeed;
-		}
-		else {
-			ROS_WARN_THROTTLE(30, "ODOMETRY: Unsupported frame_id: %d", odom_msg.frame_id);
-			return;
-		}
-		
-		// 设置child_frame_id
-		// 注意：直接使用整数值比较child_frame_id
-		if (odom_msg.child_frame_id == 8) { // MAV_FRAME_BODY_NED
-			// 使用默认的tf_child_frame_id
-			child_frame_id = tf_child_frame_id;
-		}
-		else if (odom_msg.child_frame_id == 12) { // MAV_FRAME_BODY_FRD
-			// 使用默认的tf_child_frame_id
-			child_frame_id = tf_child_frame_id;
-		}
-		else {
-			// 对于其他类型的child_frame_id，我们直接使用默认值
-			ROS_WARN_THROTTLE(30, "ODOMETRY: Unsupported child_frame_id: %d, using default", odom_msg.child_frame_id);
-		}
-		
-		// 填充Header
 		odom->header = m_uas->synchronized_header(frame_id, odom_msg.time_usec);
-		odom->child_frame_id = child_frame_id;
+		odom->child_frame_id = tf_child_frame_id;
 		
-		// 设置四元数
-		// 直接转换四元数
+		// NED到ENU坐标系转换 - 使用特殊转换方案：x和z取反、y不变
+		// 原来的标准转换: auto enu_position = ftf::transform_frame_ned_enu(Eigen::Vector3d(odom_msg.x, odom_msg.y, odom_msg.z));
+		Eigen::Vector3d enu_position(-odom_msg.x, odom_msg.y, -odom_msg.z);
+		Eigen::Vector3d enu_velocity(-odom_msg.vx, odom_msg.vy, -odom_msg.vz);
+		Eigen::Vector3d enu_angular_velocity(-odom_msg.rollspeed, odom_msg.pitchspeed, -odom_msg.yawspeed);
+		
+		// 填充位置和速度数据
+		tf::pointEigenToMsg(enu_position, odom->pose.pose.position);
+		tf::vectorEigenToMsg(enu_velocity, odom->twist.twist.linear);
+		tf::vectorEigenToMsg(enu_angular_velocity, odom->twist.twist.angular);
+		
+		// 转换四元数：NED -> 特殊ENU (x和z取反、y不变)
 		Eigen::Quaterniond q(odom_msg.q[0], odom_msg.q[1], odom_msg.q[2], odom_msg.q[3]);
-		
-		// 如果是NED坐标系，需要转换到ENU
-		if (odom_msg.frame_id == 1) { // MAV_FRAME_LOCAL_NED
-			q = ftf::transform_orientation_ned_enu(q);
+		// 确保四元数是单位四元数
+		if (std::abs(q.norm() - 1.0) > 1e-3) {
+			ROS_WARN_THROTTLE(1.0, "接收到的四元数不是单位四元数，已进行归一化");
+			q.normalize();
 		}
 		
-		tf::quaternionEigenToMsg(q, odom->pose.pose.orientation);
+		// 不使用标准转换：q = ftf::transform_orientation_ned_enu(q);
+		// 自定义四元数转换 - x和z轴翻转相当于绕y轴旋转180度
+		Eigen::Quaterniond q_rotation = Eigen::Quaterniond(0, 0, 1, 0); // 绕y轴旋转180度的四元数
+		Eigen::Quaterniond q_enu = q_rotation * q * q_rotation;
 		
-		// 从odom_msg获取协方差数据
-		// ODOMETRY.pose_covariance包含位置和姿态的协方差（位置x,y,z,姿态roll,pitch,yaw)
-		// ODOMETRY.velocity_covariance包含线速度和角速度的协方差（线速度vx,vy,vz,角速度rollspeed,pitchspeed,yawspeed)
+		tf::quaternionEigenToMsg(q_enu, odom->pose.pose.orientation);
 		
-		// 位置协方差
-		// MAVLINK ODOMETRY协方差是21个浮点数的数组，表示6x6矩阵的下三角部分
-		// ROS Odometry协方差是6x6的全矩阵，按行优先顺序排列
-		for (int i = 0; i < 6; i++) {
-			for (int j = 0; j < 6; j++) {
-				if (j <= i) {
-					// 计算下三角矩阵中的索引
-					int k = i * (i + 1) / 2 + j;
-					if (k < 21) { // 确保索引有效
-						odom->pose.covariance[i * 6 + j] = odom_msg.pose_covariance[k];
-						odom->pose.covariance[j * 6 + i] = odom_msg.pose_covariance[k]; // 对称元素
-					}
-				}
-			}
-		}
+		// 高效转换协方差 - 位置和姿态
+		fill_covariance_matrix(odom_msg.pose_covariance, odom->pose.covariance);
 		
-		// 速度协方差
-		for (int i = 0; i < 6; i++) {
-			for (int j = 0; j < 6; j++) {
-				if (j <= i) {
-					// 计算下三角矩阵中的索引
-					int k = i * (i + 1) / 2 + j;
-					if (k < 21) { // 确保索引有效
-						odom->twist.covariance[i * 6 + j] = odom_msg.velocity_covariance[k];
-						odom->twist.covariance[j * 6 + i] = odom_msg.velocity_covariance[k]; // 对称元素
-					}
-				}
-			}
-		}
+		// 高效转换协方差 - 线速度和角速度
+		fill_covariance_matrix(odom_msg.velocity_covariance, odom->twist.covariance);
 		
 		// 发布外部里程计消息
 		external_odom.publish(odom);
 		
-		// 如果设置了use_odometry，还将用此消息更新主odom话题
-		if (use_odometry) {
-			if (!has_local_position_ned_cov && !has_local_position_ned) {
-				local_odom.publish(odom);
-				
-				// 发布姿态
-				auto pose = boost::make_shared<geometry_msgs::PoseStamped>();
-				pose->header = odom->header;
-				pose->pose = odom->pose.pose;
-				local_position.publish(pose);
-				
-				// 发布速度
-				auto twist_body = boost::make_shared<geometry_msgs::TwistStamped>();
-				twist_body->header = odom->header;
-				twist_body->header.frame_id = odom->child_frame_id;
-				twist_body->twist = odom->twist.twist;
-				local_velocity_body.publish(twist_body);
-				
-				// 发布tf
-				publish_tf(odom);
+		// 如果启用了ODOMETRY消息作为主要来源，且其他来源不可用
+		if (use_odometry && !has_local_position_ned_cov && !has_local_position_ned) {
+			// 发布到主要的里程计话题
+			local_odom.publish(odom);
+			
+			// 发布姿态和速度
+			publish_pose_and_velocity(odom);
+			
+			// 发布TF变换
+			publish_tf(odom);
+		}
+	}
+	
+	// 高效填充协方差矩阵
+	void fill_covariance_matrix(const std::array<float, 21> &covariance_in, boost::array<double, 36> &covariance_out)
+	{
+		// MAVLINK ODOMETRY协方差是21个浮点数的下三角矩阵
+		// ROS Odometry协方差是6x6的全矩阵
+		for (int i = 0; i < 6; i++) {
+			for (int j = 0; j <= i; j++) {
+				// 计算下三角矩阵中的索引
+				int k = i * (i + 1) / 2 + j;
+				if (k < 21) { // 确保索引有效
+					double value = static_cast<double>(covariance_in[k]);
+					// 填充对称位置
+					covariance_out[i * 6 + j] = value;
+					covariance_out[j * 6 + i] = value;
+				}
 			}
 		}
+	}
+	
+	// 发布姿态和速度信息
+	void publish_pose_and_velocity(const nav_msgs::OdometryConstPtr &odom)
+	{
+		// 发布姿态
+		auto pose = boost::make_shared<geometry_msgs::PoseStamped>();
+		pose->header = odom->header;
+		pose->pose = odom->pose.pose;
+		local_position.publish(pose);
+		
+		// 发布速度
+		auto twist = boost::make_shared<geometry_msgs::TwistStamped>();
+		twist->header = odom->header;
+		twist->header.frame_id = odom->child_frame_id;
+		twist->twist = odom->twist.twist;
+		local_velocity_body.publish(twist);
 	}
 };
 }	// namespace std_plugins
