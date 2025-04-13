@@ -125,8 +125,20 @@ private:
 		Eigen::Affine3d tf_parent2parent_des;
 		Eigen::Affine3d tf_child2child_des;
 
-		lookup_static_transform(fcu_map_id_des, fcu_map_id_des+"_ned", tf_parent2parent_des);
-		lookup_static_transform( fcu_odom_child_id_des, fcu_odom_child_id_des+"_frd", tf_child2child_des);
+		// 我们不再使用标准TF查找
+		// lookup_static_transform(fcu_map_id_des, fcu_map_id_des+"_ned", tf_parent2parent_des);
+		// lookup_static_transform( fcu_odom_child_id_des, fcu_odom_child_id_des+"_frd", tf_child2child_des);
+		
+		// 创建特定的坐标转换矩阵 (x和z取反、y不变)
+		tf_parent2parent_des.matrix() = Eigen::Matrix4d::Identity();
+		tf_parent2parent_des.matrix().block<3,3>(0,0) = Eigen::Matrix3d::Identity();
+		tf_parent2parent_des.matrix()(0,0) = -1.0; // x轴取反
+		tf_parent2parent_des.matrix()(2,2) = -1.0; // z轴取反
+		
+		tf_child2child_des.matrix() = Eigen::Matrix4d::Identity();
+		tf_child2child_des.matrix().block<3,3>(0,0) = Eigen::Matrix3d::Identity();
+		tf_child2child_des.matrix()(0,0) = -1.0; // x轴取反
+		tf_child2child_des.matrix()(2,2) = -1.0; // z轴取反
 
 		//! Build 6x6 pose covariance matrix to be transformed and sent
 		Matrix6d cov_pose = Matrix6d::Zero();
@@ -149,25 +161,31 @@ private:
 		odom->child_frame_id = fcu_odom_child_id_des;
 
 		/**
-		 * Position parsing to desired parent
+		 * Position parsing to desired parent - 使用与四元数一致的特殊转换 (保留x轴，反转y轴和z轴)
 		 */
-		position = Eigen::Vector3d(tf_parent2parent_des.linear() * Eigen::Vector3d(odom_msg.x, odom_msg.y, odom_msg.z));
+		position = Eigen::Vector3d(odom_msg.x, -odom_msg.y, -odom_msg.z);
 		tf::pointEigenToMsg(position, odom->pose.pose.position);
 
 		/**
-		 * Orientation parsing. Quaternion has to be the rotation from desired child frame to desired parent frame
+		 * Orientation parsing - 反转y轴和z轴旋转方向
 		 */
-		Eigen::Quaterniond q_child2parent(ftf::mavlink_to_quaternion(odom_msg.q));
-		Eigen::Affine3d tf_childDes2parentDes = tf_parent2parent_des * q_child2parent * tf_child2child_des.inverse();
-		orientation = Eigen::Quaterniond(tf_childDes2parentDes.linear());
-		tf::quaternionEigenToMsg(orientation, odom->pose.pose.orientation);
+		Eigen::Quaterniond q_child2parent(ftf::mavlink_to_quaternion(odom_msg.q));  
+		
+		// 对四元数直接操作，反转y轴和z轴的旋转方向，保持x轴方向不变
+		// 对于四元数q(w, x, y, z)，要反转绕y轴和z轴的旋转，变为q(w, x, -y, -z)
+		Eigen::Quaterniond q_transformed(q_child2parent.w(), 
+		                                 q_child2parent.x(), 
+		                                -q_child2parent.y(), 
+		                                -q_child2parent.z());
+		                                
+		orientation = q_transformed;
+		tf::quaternionEigenToMsg(orientation, odom->pose.pose.orientation); 
 
 		/**
-		 * Velocities parsing
-		 * Linear and angular velocities are transforned to the desired child_frame.
+		 * Velocity parsing - 使用与四元数一致的特殊转换 (保留x轴，反转y轴和z轴)
 		 */
-		lin_vel = Eigen::Vector3d(tf_child2child_des.linear() * Eigen::Vector3d(odom_msg.vx, odom_msg.vy, odom_msg.vz));
-		ang_vel = Eigen::Vector3d(tf_child2child_des.linear() * Eigen::Vector3d(odom_msg.rollspeed, odom_msg.pitchspeed, odom_msg.yawspeed));
+		lin_vel = Eigen::Vector3d(odom_msg.vx, -odom_msg.vy, -odom_msg.vz);
+		ang_vel = Eigen::Vector3d(odom_msg.rollspeed, -odom_msg.pitchspeed, -odom_msg.yawspeed);
 		tf::vectorEigenToMsg(lin_vel, odom->twist.twist.linear);
 		tf::vectorEigenToMsg(ang_vel, odom->twist.twist.angular);
 
@@ -206,8 +224,20 @@ private:
 		Eigen::Affine3d tf_parent2parent_des;
 		Eigen::Affine3d tf_child2child_des;
 
-		lookup_static_transform(fcu_odom_parent_id_des+"_ned", odom->header.frame_id, tf_parent2parent_des);
-		lookup_static_transform(fcu_odom_child_id_des+"_frd", odom->child_frame_id, tf_child2child_des);
+		// 不再使用标准TF查找
+		// lookup_static_transform(fcu_odom_parent_id_des+"_ned", odom->header.frame_id, tf_parent2parent_des);
+		// lookup_static_transform(fcu_odom_child_id_des+"_frd", odom->child_frame_id, tf_child2child_des);
+		
+		// 创建特定的坐标转换矩阵 (x和z取反、y不变)
+		tf_parent2parent_des.matrix() = Eigen::Matrix4d::Identity();
+		tf_parent2parent_des.matrix().block<3,3>(0,0) = Eigen::Matrix3d::Identity();
+		tf_parent2parent_des.matrix()(0,0) = -1.0; // x轴取反
+		tf_parent2parent_des.matrix()(2,2) = -1.0; // z轴取反
+		
+		tf_child2child_des.matrix() = Eigen::Matrix4d::Identity();
+		tf_child2child_des.matrix().block<3,3>(0,0) = Eigen::Matrix3d::Identity();
+		tf_child2child_des.matrix()(0,0) = -1.0; // x轴取反
+		tf_child2child_des.matrix()(2,2) = -1.0; // z轴取反
 
 		//! Build 6x6 pose covariance matrix to be transformed and sent
 		ftf::Covariance6d cov_pose = odom->pose.covariance;
@@ -233,22 +263,32 @@ private:
 		msg.estimator_type = utils::enum_value(MAV_ESTIMATOR_TYPE::VISION);
 
 		/**
-		 * Position parsing from odometry's parent frame to "LOCAL_FRD" frame.
+		 * Position parsing - 使用与四元数一致的特殊转换 (保留x轴，反转y轴和z轴)
 		 */
-		position = Eigen::Vector3d(tf_parent2parent_des.linear() * ftf::to_eigen(odom->pose.pose.position));
+		Eigen::Vector3d odom_position = ftf::to_eigen(odom->pose.pose.position);
+		position = Eigen::Vector3d(odom_position.x(), -odom_position.y(), -odom_position.z());
 
 		/**
-		 * Orientation parsing.
+		 * Orientation parsing - 反转y轴和z轴旋转方向
 		 */
 		Eigen::Quaterniond q_child2parent(ftf::to_eigen(odom->pose.pose.orientation));
-		Eigen::Affine3d tf_childDes2parentDes = tf_parent2parent_des * q_child2parent * tf_child2child_des.inverse();
-		orientation = Eigen::Quaterniond(tf_childDes2parentDes.linear());
+		
+		// 对四元数直接操作，反转y轴和z轴的旋转方向，保持x轴方向不变
+		// 对于四元数q(w, x, y, z)，要反转绕y轴和z轴的旋转，变为q(w, x, -y, -z)
+		Eigen::Quaterniond q_transformed(q_child2parent.w(), 
+		                                 q_child2parent.x(), 
+		                                -q_child2parent.y(), 
+		                                -q_child2parent.z());
+		                                
+		orientation = q_transformed;
 
 		/**
-		 * Linear and angular velocities are transformed to base_link_frd
+		 * Velocity parsing - 使用与四元数一致的特殊转换 (保留x轴，反转y轴和z轴)
 		 */
-		lin_vel = Eigen::Vector3d(tf_child2child_des.linear() * ftf::to_eigen(odom->twist.twist.linear));
-		ang_vel = Eigen::Vector3d(tf_child2child_des.linear() * ftf::to_eigen(odom->twist.twist.angular));
+		Eigen::Vector3d odom_lin_vel = ftf::to_eigen(odom->twist.twist.linear);
+		Eigen::Vector3d odom_ang_vel = ftf::to_eigen(odom->twist.twist.angular);
+		lin_vel = Eigen::Vector3d(odom_lin_vel.x(), -odom_lin_vel.y(), -odom_lin_vel.z());
+		ang_vel = Eigen::Vector3d(odom_ang_vel.x(), -odom_ang_vel.y(), -odom_ang_vel.z());
 
 		/** Apply covariance transforms */
 		r_pose.block<3, 3>(0, 0) = r_pose.block<3, 3>(3, 3) = tf_parent2parent_des.linear();
@@ -262,13 +302,7 @@ private:
 		/* -*- ODOMETRY msg parser -*- */
 		msg.time_usec = odom->header.stamp.toNSec() / 1e3;
 
-		// [[[cog:
-		// for a, b in (('', 'position'), ('v', 'lin_vel')):
-		//     for f in 'xyz':
-		//         cog.outl("msg.{a}{f} = {b}.{f}();".format(**locals()))
-		// for a, b in zip("xyz", ('rollspeed', 'pitchspeed', 'yawspeed')):
-		//     cog.outl("msg.{b} = ang_vel.{a}();".format(**locals()))
-		// ]]]
+		// 手动设置位置、速度和角速度
 		msg.x = position.x();
 		msg.y = position.y();
 		msg.z = position.z();
@@ -278,7 +312,6 @@ private:
 		msg.rollspeed = ang_vel.x();
 		msg.pitchspeed = ang_vel.y();
 		msg.yawspeed = ang_vel.z();
-		// [[[end]]] (checksum: ead24a1a6a14496c9de6c1951ccfbbd7)
 
 		ftf::quaternion_to_mavlink(orientation, msg.q);
 		ftf::covariance_urt_to_mavlink(cov_pose_map, msg.pose_covariance);
